@@ -1,0 +1,17 @@
+# Data: raw files are downloaded or copied, never committed
+data/raw/*
+!data/raw/.gitkeep
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+# Jupyter
+.ipynb_checkpoints/
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+# Local commit message drafts
+commit_msg.txt
