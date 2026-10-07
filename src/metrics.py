@@ -106,3 +106,55 @@ def build_order_facts(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
     date_cols = ["purchase_date", "purchase_month", "first_purchase_date"]
     facts[date_cols] = facts[date_cols].apply(pd.to_datetime)
     return facts
+
+
+def monthly_kpis(facts: pd.DataFrame) -> pd.DataFrame:
+    """One row per purchase month with the core KPIs and their component rates."""
+    f = facts[facts["is_valid_purchase"]]
+    m = f.groupby("purchase_month").agg(
+        orders=("order_id", "size"),
+        gmv=("item_value", "sum"),
+        delivered=("is_delivered", "sum"),
+        on_time=("is_on_time", "sum"),
+        good_orders=("is_good_order", "sum"),
+        promised_days=("promised_days", "mean"),
+    )
+    # customers, not orders: a multi-seller basket is several order_ids (Project 1 fix)
+    m["new_customers"] = (f[f["is_first_purchase"]]
+                          .groupby("purchase_month")["customer_unique_id"].nunique())
+    m["delivered_rate"] = m["delivered"] / m["orders"]
+    m["on_time_rate"] = m["on_time"] / m["delivered"]
+    m["good_review_rate"] = m["good_orders"] / m["on_time"]
+    return m
+
+
+def first_two_purchases(facts: pd.DataFrame) -> pd.DataFrame:
+    """One row per customer: first and second purchase DAY (second is NaT if none)."""
+    days = (facts.loc[facts["is_valid_purchase"], ["customer_unique_id", "purchase_date"]]
+            .drop_duplicates()
+            .sort_values(["customer_unique_id", "purchase_date"]))
+    days["n"] = days.groupby("customer_unique_id").cumcount() + 1
+    out = days[days["n"] <= 2].pivot(index="customer_unique_id", columns="n",
+                                      values="purchase_date")
+    out.columns = ["first_date", "second_date"]
+    out["days_to_second"] = (out["second_date"] - out["first_date"]).dt.days
+    return out.reset_index()
+
+
+def repeat_rate_within(cust: pd.DataFrame, days: int, data_end) -> tuple[float, int]:
+    """Share of customers who bought again within `days` of their first purchase,
+    among customers observed for at least `days` (censoring-aware)."""
+    eligible = cust[cust["first_date"] <= data_end - pd.Timedelta(days=days)]
+    return (eligible["days_to_second"] <= days).mean(), len(eligible)
+
+
+def cohort_matrix(events: pd.DataFrame, id_col: str, month_col: str) -> pd.DataFrame:
+    """events: one row per (id, active month). Returns cohort × months-since-first
+    table with the share of the cohort active in each month."""
+    e = events[[id_col, month_col]].drop_duplicates().copy()
+    month = pd.to_datetime(e[month_col])
+    e["m_idx"] = month.dt.year * 12 + month.dt.month
+    e["offset"] = e["m_idx"] - e.groupby(id_col)["m_idx"].transform("min")
+    e["cohort"] = month.groupby(e[id_col]).transform("min").dt.strftime("%Y-%m")
+    counts = e.pivot_table(index="cohort", columns="offset", values=id_col, aggfunc="nunique")
+    return counts.div(counts[0], axis=0)
